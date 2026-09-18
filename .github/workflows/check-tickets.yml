@@ -27,7 +27,7 @@ jobs:
       - name: Run check
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python check_tickets.py
+        run: python check_tickets.py --debug
 
       - name: Commit updated state
         run: |
