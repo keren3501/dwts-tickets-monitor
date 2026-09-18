@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 Checks on-camera-audiences.com's Dancing with the Stars page for specific
-taping dates, and sends an ntfy.sh push notification if the button for one
-of them changes away from "SUBMIT INFO" (meaning tickets/registration opened).
+taping dates, and sends an ntfy.sh push notification EVERY run with the
+current button text for each watched date - so you get a heartbeat on every
+check, not just when something changes. Runs where a button has actually
+opened (anything other than "SUBMIT INFO") are marked and sent at high
+priority so they stand out from the routine ones.
 
 Matching is done purely by visible TEXT on the rendered page (not CSS
 selectors or element ids), since the site injects the date cards via JS and
@@ -142,14 +145,18 @@ def match_target(card: dict, target: dict) -> bool:
     return any(kw.lower() in header.lower() for kw in target["month_keywords"])
 
 
-def send_ntfy(title: str, message: str):
+def send_ntfy(title: str, message: str, priority: str = "default", tags: str = "clipboard"):
     if not NTFY_URL:
         print(f"[ntfy skipped - no NTFY_TOPIC set] {title}: {message}")
         return
     req = urllib.request.Request(
         NTFY_URL,
         data=message.encode("utf-8"),
-        headers={"Title": title.encode("utf-8"), "Priority": "high", "Tags": "tada"},
+        headers={
+            "Title": title.encode("utf-8"),
+            "Priority": priority,
+            "Tags": tags,
+        },
         method="POST",
     )
     try:
@@ -183,43 +190,64 @@ def main():
         return
 
     state = load_state()
-    any_found = False
+    status_lines = []
+    any_open = False
+    any_newly_open = False
 
     for target in TARGET_DATES:
         matches = [c for c in cards if match_target(c, target)]
-        if not matches:
-            print(f"{target['label']}: not currently listed on the page")
-            continue
-
-        any_found = True
-        card = matches[0]
-        button_text = card["button"].strip()
         prev = state.get(target["label"])
 
-        print(f"{target['label']}: button = '{button_text}' (previously: {prev!r})")
+        if not matches:
+            button_text = None
+            display = "not listed yet"
+        else:
+            button_text = matches[0]["button"].strip()
+            display = button_text
 
-        is_open = button_text.upper() != "SUBMIT INFO"
-        changed = prev != button_text
+        is_open = button_text is not None and button_text.upper() != "SUBMIT INFO"
+        changed = button_text != prev
 
-        if is_open and changed:
-            send_ntfy(
-                title=f"🎟️ DWTS tickets - {target['label']}",
-                message=f"Button changed to: \"{button_text}\"\n{URL}",
-            )
+        if is_open:
+            any_open = True
+            display += " 🎉 (NEW!)" if changed else " 🎉"
+            if changed:
+                any_newly_open = True
 
+        print(f"{target['label']}: {display} (previously: {prev!r})")
+        status_lines.append(f"{target['label']}: {display}")
         state[target["label"]] = button_text
 
-    if not any_found and cards:
-        print(
-            "Note: page has date cards, but none matched the target dates - "
-            "they may not be listed yet (site shows up to 60 days ahead), "
-            "or parsing needs adjusting. Run with --debug to inspect."
-        )
-    elif not cards:
-        print(
-            "Note: 0 date cards detected at all - parsing may need adjusting "
+    success = bool(cards)  # did we actually manage to read real card data this run?
+
+    if not success:
+        note = (
+            "0 date cards detected at all - parsing may need adjusting "
             "for a site layout change. Run with --debug to inspect."
         )
+        print(f"Note: {note}")
+        status_lines.append(f"⚠️ {note}")
+
+    title = "🎟️ DWTS ticket check"
+    if any_newly_open:
+        title += " - TICKETS OPEN!"
+        priority, tags = "high", "tada"
+    elif success:
+        title += " (ok)"
+        priority, tags = "default", "clipboard"
+    else:
+        # Failed/empty run: still posted so it's in the app's history, but at
+        # min priority so it doesn't actually alert the phone - only genuine
+        # successful reads should do that.
+        title += " (failed - no cards found)"
+        priority, tags = "min", "warning"
+
+    send_ntfy(
+        title=title,
+        message="\n".join(status_lines) + f"\n{URL}",
+        priority=priority,
+        tags=tags,
+    )
 
     save_state(state)
 
