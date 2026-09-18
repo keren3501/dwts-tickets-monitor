@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -38,13 +39,44 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC")  # required to actually notify
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}" if NTFY_TOPIC else None
 
 
-def fetch_lines() -> list[str]:
+def fetch_lines(debug: bool = False) -> list[str]:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(2000)  # let any late JS rendering settle
+
+        # The date-cards section renders in a bit after the initial page load
+        # (same as when opening it in a normal browser - it takes a second to
+        # appear). Rather than guess a fixed delay, poll until either a
+        # weekday token (TUE/WED/...) shows up - meaning cards rendered - or
+        # the visible text stops changing between checks, or we hit a
+        # generous timeout.
+        deadline = time.time() + 20
+        last_text = ""
+        stable_checks = 0
+        elapsed_checks = 0
         text = page.inner_text("body")
+        while time.time() < deadline:
+            text = page.inner_text("body")
+            elapsed_checks += 1
+            if any(f"\n{wd}\n" in f"\n{text}\n" for wd in WEEKDAYS) or any(
+                wd in text.upper() for wd in WEEKDAYS
+            ):
+                page.wait_for_timeout(1500)  # let the rest of the cards finish rendering
+                text = page.inner_text("body")
+                break
+            if text == last_text:
+                stable_checks += 1
+                if stable_checks >= 3:  # unchanged for ~3s straight - probably done
+                    break
+            else:
+                stable_checks = 0
+                last_text = text
+            page.wait_for_timeout(1000)
+
+        if debug:
+            print(f"[debug] polled {elapsed_checks} time(s) before settling")
+
         browser.close()
     return [line.strip() for line in text.split("\n") if line.strip()]
 
@@ -139,7 +171,7 @@ def save_state(state: dict):
 
 def main():
     debug = "--debug" in sys.argv
-    lines = fetch_lines()
+    lines = fetch_lines(debug=debug)
     cards = find_cards(lines)
 
     if debug:
