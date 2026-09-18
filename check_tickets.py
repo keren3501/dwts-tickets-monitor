@@ -48,6 +48,16 @@ def fetch_lines(debug: bool = False) -> list[str]:
         page = browser.new_page()
         page.goto(URL, wait_until="networkidle", timeout=60000)
 
+        # The date cards are hidden behind a "GET TICKETS" toggle button -
+        # confirmed via investigate.py: nothing shows up until it's clicked.
+        # Best-effort click; if the button isn't there (e.g. the site
+        # changes to show dates directly), just continue.
+        try:
+            page.get_by_text("GET TICKETS", exact=False).first.click(timeout=5000)
+        except Exception as e:
+            if debug:
+                print(f"[debug] couldn't click GET TICKETS (may be fine): {e}")
+
         # The date-cards section renders in a bit after the initial page load
         # (same as when opening it in a normal browser - it takes a second to
         # appear). Rather than guess a fixed delay, poll until either a
