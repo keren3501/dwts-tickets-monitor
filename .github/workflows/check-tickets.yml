@@ -1,0 +1,38 @@
+name: Check DWTS ticket status
+
+on:
+  schedule:
+    # Runs at minute 0 of every hour (UTC)
+    - cron: "0 * * * *"
+  workflow_dispatch: {}  # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: write  # needed to commit the updated state.json back to the repo
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run check
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python check_tickets.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "Update ticket-check state [skip ci]"
+          git push
