@@ -1,4 +1,28 @@
 {
   "22/9/2026": "SUBMIT INFO",
-  "13/10/2026": "SUBMIT INFO"
+  "13/10/2026": "SUBMIT INFO",
+  "22 SEPTEMBER 2026": {
+    "status": "Show Full!",
+    "button": "SUBMIT INFO"
+  },
+  "29 SEPTEMBER 2026": {
+    "status": "TICKETS COMING SOON!",
+    "button": "SUBMIT INFO"
+  },
+  "6 OCTOBER 2026": {
+    "status": "TICKETS COMING SOON!",
+    "button": "SUBMIT INFO"
+  },
+  "13 OCTOBER 2026": {
+    "status": "TICKETS COMING SOON!",
+    "button": "SUBMIT INFO"
+  },
+  "20 OCTOBER 2026": {
+    "status": "TICKETS COMING SOON!",
+    "button": "SUBMIT INFO"
+  },
+  "27 OCTOBER 2026": {
+    "status": "TICKETS COMING SOON!",
+    "button": "SUBMIT INFO"
+  }
 }
