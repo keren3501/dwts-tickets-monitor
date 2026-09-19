@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Checks on-camera-audiences.com's Dancing with the Stars page for specific
-taping dates, and sends an ntfy.sh push notification EVERY run with the
-current button text for each watched date - so you get a heartbeat on every
-check, not just when something changes. Runs where a button has actually
-opened (anything other than "SUBMIT INFO") are marked and sent at high
-priority so they stand out from the routine ones.
+Checks on-camera-audiences.com's Dancing with the Stars page for ALL
+currently-listed taping dates (not a fixed list - whatever the site is
+showing right now, so nothing gets missed as the calendar rolls forward and
+old dates stop being relevant), and sends an ntfy.sh push notification
+EVERY run with the current status + button text for each one - so you get a
+heartbeat every check, not just when something changes. Any real change
+(status line and/or button, e.g. "TICKETS COMING SOON!" -> "SHOW FULL", or
+the button becoming something other than "SUBMIT INFO") is sent at high
+priority so it stands out from the routine ones.
 
 Matching is done purely by visible TEXT on the rendered page (not CSS
 selectors or element ids), since the site injects the date cards via JS and
@@ -27,12 +30,6 @@ from playwright.sync_api import sync_playwright
 
 URL = "https://on-camera-audiences.com/shows/dancing-with-the-stars/"
 STATE_FILE = Path(__file__).parent / "state.json"
-
-# Which dates to watch for. Add/remove entries here as needed.
-TARGET_DATES = [
-    {"label": "22/9/2026", "day": 22, "month_keywords": ["ספטמבר", "SEP", "September"]},
-    {"label": "13/10/2026", "day": 13, "month_keywords": ["אוקטובר", "OCT", "October"]},
-]
 
 WEEKDAYS = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"}
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}\s*[AP]M$", re.IGNORECASE)
@@ -148,11 +145,9 @@ def find_cards(lines: list[str]) -> list[dict]:
     return cards
 
 
-def match_target(card: dict, target: dict) -> bool:
-    if card["day"] != target["day"]:
-        return False
-    header = card["month_header"]
-    return any(kw.lower() in header.lower() for kw in target["month_keywords"])
+def card_label(card: dict) -> str:
+    """Stable, human-readable key for a card, e.g. '13 OCTOBER 2026'."""
+    return f"{card['day']} {card['month_header']}".strip()
 
 
 def send_ntfy(title: str, message: str, priority: str = "default", tags: str = "clipboard"):
@@ -201,32 +196,53 @@ def main():
 
     state = load_state()
     status_lines = []
-    any_open = False
-    any_newly_open = False
+    any_open = False        # some card's button says something other than "SUBMIT INFO"
+    any_real_change = False  # some card's status and/or button differs from last successful read
+    current_labels = set()
 
-    for target in TARGET_DATES:
-        matches = [c for c in cards if match_target(c, target)]
-        prev = state.get(target["label"])
+    # Sort by (year-order-of-appearance, day) roughly by just keeping the
+    # page's own order - cards already come out in on-page order from
+    # find_cards(), so no need to re-sort.
+    for card in cards:
+        label = card_label(card)
+        current_labels.add(label)
+        prev = state.get(label)  # {"status": ..., "button": ...} or None
 
-        if not matches:
-            button_text = None
-            display = "not listed yet"
-        else:
-            button_text = matches[0]["button"].strip()
-            display = button_text
+        current = {"status": card["status"].strip(), "button": card["button"].strip()}
+        display = f"{label}: {current['status']} — {current['button']}"
 
-        is_open = button_text is not None and button_text.upper() != "SUBMIT INFO"
-        changed = button_text != prev
+        button_open = current["button"].upper() != "SUBMIT INFO"
+        # Only count it as a real, notable change once we HAVE a prior
+        # successful reading to compare against - otherwise every date's
+        # very first run would (correctly but noisily) look like a change.
+        real_change = prev is not None and current != prev
 
-        if is_open:
+        if button_open:
             any_open = True
-            display += " 🎉 (NEW!)" if changed else " 🎉"
-            if changed:
-                any_newly_open = True
+            display += " 🎉"
+        if real_change:
+            any_real_change = True
+            # prev may still be in the OLD state.json format (a plain button
+            # string) from before this script tracked the status line too -
+            # handle both so upgrading doesn't crash on the next run.
+            was = f"{prev['status']} — {prev['button']}" if isinstance(prev, dict) else str(prev)
+            display += f" 🔔 CHANGED (was: {was})"
 
-        print(f"{target['label']}: {display} (previously: {prev!r})")
-        status_lines.append(f"{target['label']}: {display}")
-        state[target["label"]] = button_text
+        print(f"{display} (previously: {prev!r})")
+        status_lines.append(display)
+        state[label] = current
+
+    # Dates that were tracked before but aren't listed on the page anymore
+    # (show already happened, or the site's 60-day window rolled past it) -
+    # note it once, then stop tracking it so it doesn't linger forever.
+    stale_labels = [
+        lbl for lbl in list(state.keys())
+        if lbl not in current_labels and isinstance(state.get(lbl), dict)
+    ]
+    for lbl in stale_labels:
+        print(f"{lbl}: no longer listed on the page - dropping from tracking")
+        status_lines.append(f"{lbl}: no longer listed (dropped)")
+        del state[lbl]
 
     success = bool(cards)  # did we actually manage to read real card data this run?
 
@@ -239,9 +255,13 @@ def main():
         status_lines.append(f"⚠️ {note}")
 
     title = "🎟️ DWTS ticket check"
-    if any_newly_open:
-        title += " - TICKETS OPEN!"
-        priority, tags = "high", "tada"
+    if any_real_change or any_open:
+        # Any actual status/button change (e.g. "TICKETS COMING SOON!" ->
+        # "SHOW FULL"), or a button that's currently anything other than
+        # "SUBMIT INFO", is worth an urgent ping every time - not just the
+        # first run it's noticed.
+        title += " - CHANGE DETECTED!" if any_real_change else " - OPEN!"
+        priority, tags = "high", "bell" if any_real_change and not any_open else "tada"
     elif success:
         title += " (ok)"
         priority, tags = "default", "clipboard"
